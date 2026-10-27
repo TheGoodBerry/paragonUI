@@ -1,0 +1,1118 @@
+--[[
+    ██████╗  █████╗ ██████╗  █████╗  ██████╗  ██████╗ ███╗   ██╗
+    ██╔══██╗██╔══██╗██╔══██╗██╔══██╗██╔════╝ ██╔═══██╗████╗  ██║
+    ██████╔╝███████║██████╔╝███████║██║  ███╗██║   ██║██╔██╗ ██║
+    ██╔═══╝ ██╔══██║██╔══██╗██╔══██║██║   ██║██║   ██║██║╚██╗██║
+    ██║     ██║  ██║██║  ██║██║  ██║╚██████╔╝╚██████╔╝██║ ╚████║
+    ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
+                        PARAGON UI SYSTEM  v1.0.0
+                     ImGui-styled UI library for Roblox
+
+    ───────────────────────── QUICK START ─────────────────────────
+
+    local lib = loadstring(game:HttpGet("https://your.host/ParagonUI.lua"))()
+
+    lib:Init({ Title = "PARAGON UI SYSTEM", Size = UDim2.fromOffset(480, 350), ToggleKey = Enum.KeyCode.RightShift })
+
+    local main = lib:CreateTab("Main")
+
+    main:CreateLabel("Hello from Paragon")
+    main:CreateSeparator("Combat")
+    main:CreateButton("Click me", function() print("clicked") end)
+    main:CreateCheckbox("Enabled", false, function(v) print(v) end)
+    main:CreateSlider("Speed", 0, 100, 16, function(v) print(v) end)
+    main:CreateInput("Name", "default", function(txt) print(txt) end)
+    main:CreateCombo("Mode", {"A", "B", "C"}, "A", function(v) print(v) end)
+    main:CreateKeybind("Fly key", Enum.KeyCode.F, function() print("pressed") end)
+    main:CreateColorPicker("ESP color", Color3.fromRGB(66,150,250), function(c) print(c) end)
+
+    local hdr = main:CreateHeader("Advanced", true)      -- collapsing header, same API inside
+    hdr:CreateCheckbox("Nested checkbox", true)
+
+    lib:Notify({ Title = "Paragon", Text = "Loaded.", Duration = 4 })
+
+    Every element also accepts a config table:
+        main:CreateSlider({ Name = "FOV", Min = 30, Max = 120, Default = 70, Increment = 1, Suffix = "°", Flag = "fov", Callback = print })
+    Positional calls accept a trailing extras table after the normal args:
+        main:CreateSlider("X", 0, 1, 0.5, cb, { Increment = 0.05, Flag = "x" })
+
+    lib.Flags (a.k.a. window.Flags) holds the current value of every element given a Flag.
+    Every element returns an object with :Set(v) :Get() :SetVisible(b) :Destroy() (+ :SetText on labels/buttons).
+
+    Multiple windows:  local w = lib:CreateWindow({ Title = "Second" })  then  w:CreateTab("x")
+]]
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
+
+local Paragon = { Name = "PARAGON UI SYSTEM", Version = "1.0.0", Flags = {} }
+
+--==============================================================================
+-- THEME (ImGui "Dark" defaults).  Each entry: { Color = Color3, Alpha = 0..1 }
+--==============================================================================
+local function C(r, g, b, a)
+	return { Color = Color3.fromRGB(r, g, b), Alpha = a or 1 }
+end
+Paragon.Color = C
+
+local DefaultTheme = {
+	WindowBg         = C(15, 15, 15, 0.94),
+	PopupBg          = C(20, 20, 20, 0.96),
+	Border           = C(110, 110, 128, 0.50),
+	TitleBg          = C(10, 10, 10, 1),
+	TitleBgActive    = C(41, 74, 122, 1),
+	FrameBg          = C(41, 74, 122, 0.54),
+	FrameBgHovered   = C(66, 150, 250, 0.40),
+	FrameBgActive    = C(66, 150, 250, 0.67),
+	Button           = C(66, 150, 250, 0.40),
+	ButtonHovered    = C(66, 150, 250, 1.00),
+	ButtonActive     = C(15, 135, 250, 1.00),
+	Header           = C(66, 150, 250, 0.31),
+	HeaderHovered    = C(66, 150, 250, 0.80),
+	HeaderActive     = C(66, 150, 250, 1.00),
+	Tab              = C(46, 89, 148, 0.86),
+	TabHovered       = C(66, 150, 250, 0.80),
+	TabActive        = C(51, 105, 173, 1.00),
+	CheckMark        = C(66, 150, 250, 1.00),
+	SliderGrab       = C(61, 133, 224, 1.00),
+	SliderGrabActive = C(66, 150, 250, 1.00),
+	Separator        = C(110, 110, 128, 0.50),
+	Text             = C(255, 255, 255, 1.00),
+	TextDisabled     = C(128, 128, 128, 1.00),
+	ScrollbarGrab    = C(79, 79, 79, 1.00),
+}
+Paragon.Theme = DefaultTheme
+
+--==============================================================================
+-- HELPERS
+--==============================================================================
+local FONT = Enum.Font.Code
+local TEXT_SIZE = 14
+local TITLE_H = 20
+local WIDTH = 0.62 -- ImGui-style: widget takes ~62% of the row, label sits on the right
+
+local MB1, TOUCH = Enum.UserInputType.MouseButton1, Enum.UserInputType.Touch
+local function isPress(i) return i.UserInputType == MB1 or i.UserInputType == TOUCH end
+local function isMove(i) return i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == TOUCH end
+
+-- input.Position lacks the topbar inset; our ScreenGui ignores it, so add it back
+local function pointer(input)
+	local inset = GuiService:GetGuiInset()
+	return Vector2.new(input.Position.X + inset.X, input.Position.Y + inset.Y)
+end
+
+local function inside(frame, p)
+	if not frame or not frame.Parent then return false end
+	local pos, size = frame.AbsolutePosition, frame.AbsoluteSize
+	return p.X >= pos.X and p.X <= pos.X + size.X and p.Y >= pos.Y and p.Y <= pos.Y + size.Y
+end
+
+local function safe(cb, ...)
+	if typeof(cb) == "function" then
+		local ok, err = pcall(cb, ...)
+		if not ok then warn("[PARAGON] callback error: " .. tostring(err)) end
+	end
+end
+
+local function paint(inst, c, prop)
+	prop = prop or "Background"
+	inst[prop .. "Color3"] = c.Color
+	inst[prop .. "Transparency"] = 1 - c.Alpha
+end
+
+local function New(class, props, children)
+	local inst = Instance.new(class)
+	if inst:IsA("GuiObject") then inst.BorderSizePixel = 0 end
+	if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+		inst.Font = FONT
+		inst.TextSize = TEXT_SIZE
+		inst.TextColor3 = Color3.new(1, 1, 1)
+		if inst:IsA("TextLabel") then inst.BackgroundTransparency = 1 end
+		if inst:IsA("TextButton") then inst.AutoButtonColor = false end
+	end
+	local parent
+	for k, v in pairs(props or {}) do
+		if k == "Parent" then parent = v else inst[k] = v end
+	end
+	for _, ch in ipairs(children or {}) do ch.Parent = inst end
+	if parent then inst.Parent = parent end
+	return inst
+end
+
+local function stroke(inst, c)
+	return New("UIStroke", {
+		Parent = inst, Thickness = 1, Color = c.Color, Transparency = 1 - c.Alpha,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	})
+end
+
+-- Hover / press colour handling (instant, like ImGui)
+local function stateful(T, source, target, normal, hover, active)
+	local hov, down = false, false
+	local function refresh()
+		paint(target, T[(down and hov) and active or (hov and hover or normal)])
+	end
+	source.MouseEnter:Connect(function() hov = true refresh() end)
+	source.MouseLeave:Connect(function() hov, down = false, false refresh() end)
+	source.InputBegan:Connect(function(i) if isPress(i) then down = true refresh() end end)
+	source.InputEnded:Connect(function(i) if isPress(i) then down = false refresh() end end)
+	refresh()
+	return refresh
+end
+
+-- Accept either positional args or a single config table (+ optional trailing extras table)
+local function resolve(keys, ...)
+	local n = select("#", ...)
+	local first = ...
+	if type(first) == "table" and typeof(first) == "table" and n == 1 then
+		return first
+	end
+	local args = table.pack(...)
+	local out = {}
+	for i, k in ipairs(keys) do out[k] = args[i] end
+	local extra = args[#keys + 1]
+	if type(extra) == "table" then
+		for k, v in pairs(extra) do out[k] = v end
+	end
+	return out
+end
+
+local function emit(win, a, value)
+	if a.Flag then win.Flags[a.Flag] = value end
+	safe(a.Callback, value)
+end
+local function initFlag(win, a, value)
+	if a.Flag then win.Flags[a.Flag] = value end
+end
+
+local function mount(gui)
+	pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+	local targets = {}
+	pcall(function() if gethui then table.insert(targets, gethui()) end end)
+	pcall(function() table.insert(targets, game:GetService("CoreGui")) end)
+	pcall(function() table.insert(targets, Players.LocalPlayer:WaitForChild("PlayerGui", 5)) end)
+	for _, t in ipairs(targets) do
+		pcall(function()
+			local old = t:FindFirstChild(gui.Name)
+			if old then old:Destroy() end
+		end)
+	end
+	for _, t in ipairs(targets) do
+		local ok = pcall(function() gui.Parent = t end)
+		if ok and gui.Parent == t then return end
+	end
+end
+
+local function toVec2(v, fallback)
+	if typeof(v) == "Vector2" then return v end
+	if typeof(v) == "UDim2" then return Vector2.new(v.X.Offset, v.Y.Offset) end
+	return fallback
+end
+
+--==============================================================================
+-- CONTAINER (shared by tabs, headers) - all the element constructors live here
+--==============================================================================
+local Container = {}
+Container.__index = Container
+
+function Container:_next()
+	self._order = (self._order or 0) + 1
+	return self._order
+end
+
+function Container:_row(h)
+	return New("Frame", {
+		Parent = self.Content, Size = UDim2.new(1, 0, 0, h),
+		BackgroundTransparency = 1, LayoutOrder = self:_next(),
+	})
+end
+
+local function base(inst)
+	local el = { Instance = inst }
+	function el:SetVisible(v) inst.Visible = v end
+	function el:Destroy() inst:Destroy() end
+	return el
+end
+
+local function sideLabel(row, text, T)
+	local l = New("TextLabel", {
+		Parent = row, Position = UDim2.new(WIDTH, 6, 0, 0), Size = UDim2.new(1 - WIDTH, -6, 1, 0),
+		Text = text or "", TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+	})
+	paint(l, T.Text, "Text")
+	return l
+end
+
+------------------------------------------------------------------ Label
+function Container:CreateLabel(...)
+	local a = resolve({ "Name" }, ...)
+	local T = self.Window.Theme
+	local lbl = New("TextLabel", {
+		Parent = self.Content, Size = UDim2.new(1, 0, 0, 20), AutomaticSize = Enum.AutomaticSize.Y,
+		TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
+		Text = a.Name or "", LayoutOrder = self:_next(),
+	})
+	paint(lbl, a.Disabled and T.TextDisabled or T.Text, "Text")
+	local el = base(lbl)
+	function el:SetText(t) lbl.Text = t end
+	function el:Set(t) lbl.Text = t end
+	function el:Get() return lbl.Text end
+	return el
+end
+Container.CreateText = Container.CreateLabel
+
+------------------------------------------------------------------ Separator
+function Container:CreateSeparator(...)
+	local a = resolve({ "Name" }, ...)
+	local T = self.Window.Theme
+	if not a.Name or a.Name == "" then
+		local row = self:_row(8)
+		local line = New("Frame", { Parent = row, Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 0.5, 0) })
+		paint(line, T.Separator)
+		return base(row)
+	end
+	local row = self:_row(20)
+	local lbl = New("TextLabel", {
+		Parent = row, Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X,
+		Text = a.Name, TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	paint(lbl, T.Text, "Text")
+	local line = New("Frame", { Parent = row, Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 0.5, 0) })
+	paint(line, T.Separator)
+	local function layout()
+		local w = lbl.AbsoluteSize.X + 8
+		line.Position = UDim2.new(0, w, 0.5, 0)
+		line.Size = UDim2.new(1, -w, 0, 1)
+	end
+	lbl:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
+	layout()
+	local el = base(row)
+	function el:SetText(t) lbl.Text = t end
+	return el
+end
+
+------------------------------------------------------------------ Button
+function Container:CreateButton(...)
+	local a = resolve({ "Name", "Callback" }, ...)
+	local T = self.Window.Theme
+	local row = self:_row(20)
+	local btn = New("TextButton", { Parent = row, Size = UDim2.fromScale(1, 1), Text = a.Name or "Button" })
+	paint(btn, T.Text, "Text")
+	stateful(T, btn, btn, "Button", "ButtonHovered", "ButtonActive")
+	btn.Activated:Connect(function() safe(a.Callback) end)
+	local el = base(row)
+	function el:SetText(t) btn.Text = t end
+	function el:Fire() safe(a.Callback) end
+	return el
+end
+
+------------------------------------------------------------------ Checkbox
+function Container:CreateCheckbox(...)
+	local a = resolve({ "Name", "Default", "Callback" }, ...)
+	local win, T = self.Window, self.Window.Theme
+	local state = a.Default == true
+	initFlag(win, a, state)
+
+	local row = self:_row(20)
+	local hit = New("TextButton", { Parent = row, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "" })
+	local box = New("Frame", { Parent = hit, Size = UDim2.fromOffset(16, 16), Position = UDim2.fromOffset(0, 2) })
+	local tick = New("Frame", { Parent = box, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = state })
+	local leg1 = New("Frame", {
+		Parent = tick, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(5 / 16, 9.5 / 16),
+		Size = UDim2.fromOffset(5, 2), Rotation = 45,
+	})
+	local leg2 = New("Frame", {
+		Parent = tick, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(9.5 / 16, 8 / 16),
+		Size = UDim2.fromOffset(9, 2), Rotation = -45,
+	})
+	paint(leg1, T.CheckMark) paint(leg2, T.CheckMark)
+	local lbl = New("TextLabel", {
+		Parent = hit, Position = UDim2.fromOffset(22, 0), Size = UDim2.new(1, -22, 1, 0),
+		Text = a.Name or "", TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+	})
+	paint(lbl, T.Text, "Text")
+	stateful(T, hit, box, "FrameBg", "FrameBgHovered", "FrameBgActive")
+
+	local el = base(row)
+	local function set(v, silent)
+		state = v and true or false
+		tick.Visible = state
+		if not silent then emit(win, a, state) else initFlag(win, a, state) end
+	end
+	hit.Activated:Connect(function() set(not state) end)
+	function el:Set(v) set(v) end
+	function el:Get() return state end
+	function el:SetText(t) lbl.Text = t end
+	return el
+end
+Container.CreateToggle = Container.CreateCheckbox
+
+------------------------------------------------------------------ Slider
+function Container:CreateSlider(...)
+	local a = resolve({ "Name", "Min", "Max", "Default", "Callback" }, ...)
+	local win, T = self.Window, self.Window.Theme
+	local min, max = a.Min or 0, a.Max or 100
+	local inc = a.Increment
+	if not inc then
+		local ints = min % 1 == 0 and max % 1 == 0 and (a.Default == nil or a.Default % 1 == 0)
+		inc = ints and 1 or 0.01
+	end
+	local decimals = tostring(inc):match("%.(%d+)")
+	decimals = decimals and #decimals or 0
+	local fmt = "%." .. decimals .. "f"
+	local suffix = a.Suffix or ""
+
+	local function snap(v)
+		v = math.floor((v - min) / inc + 0.5) * inc + min
+		v = math.clamp(v, min, max)
+		return tonumber(string.format(fmt, v))
+	end
+	local value = snap(a.Default or min)
+	initFlag(win, a, value)
+
+	local row = self:_row(20)
+	local bar = New("TextButton", { Parent = row, Size = UDim2.new(WIDTH, 0, 1, 0), Text = "" })
+	local refresh = stateful(T, bar, bar, "FrameBg", "FrameBgHovered", "FrameBgActive")
+	local grab = New("Frame", { Parent = bar, Size = UDim2.new(0, 10, 1, -4), Position = UDim2.new(0, 0, 0, 2) })
+	paint(grab, T.SliderGrab)
+	local txt = New("TextLabel", { Parent = bar, Size = UDim2.fromScale(1, 1), ZIndex = 3, Text = "" })
+	paint(txt, T.Text, "Text")
+	local lbl = sideLabel(row, a.Name, T)
+
+	local function render()
+		local al = (max == min) and 0 or (value - min) / (max - min)
+		grab.AnchorPoint = Vector2.new(al, 0)
+		grab.Position = UDim2.new(al, 0, 0, 2)
+		txt.Text = string.format(fmt, value) .. suffix
+	end
+	render()
+
+	local function setValue(v, silent)
+		v = snap(v)
+		if v == value and not silent then return end
+		value = v
+		render()
+		if silent then initFlag(win, a, value) else emit(win, a, value) end
+	end
+
+	local dragging = false
+	local function fromX(x)
+		local w = math.max(bar.AbsoluteSize.X - 10, 1)
+		local al = math.clamp((x - bar.AbsolutePosition.X - 5) / w, 0, 1)
+		setValue(min + al * (max - min))
+	end
+	bar.InputBegan:Connect(function(i)
+		if isPress(i) then
+			dragging = true
+			paint(grab, T.SliderGrabActive)
+			fromX(i.Position.X)
+		end
+	end)
+	win:_connect(UIS.InputChanged, function(i)
+		if dragging and isMove(i) then fromX(i.Position.X) end
+	end)
+	win:_connect(UIS.InputEnded, function(i)
+		if dragging and isPress(i) then
+			dragging = false
+			paint(grab, T.SliderGrab)
+		end
+	end)
+
+	local el = base(row)
+	function el:Set(v) setValue(v) end
+	function el:Get() return value end
+	function el:SetText(t) lbl.Text = t end
+	return el
+end
+
+------------------------------------------------------------------ Input
+function Container:CreateInput(...)
+	local a = resolve({ "Name", "Default", "Callback" }, ...)
+	local win, T = self.Window, self.Window.Theme
+	local row = self:_row(20)
+	local box = New("TextBox", {
+		Parent = row, Size = UDim2.new(WIDTH, 0, 1, 0), Text = a.Default or "",
+		PlaceholderText = a.Placeholder or "", ClearTextOnFocus = false,
+		TextXAlignment = Enum.TextXAlignment.Left, ClipsDescendants = true,
+	})
+	New("UIPadding", { Parent = box, PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) })
+	paint(box, T.FrameBg)
+	paint(box, T.Text, "Text")
+	box.PlaceholderColor3 = T.TextDisabled.Color
+	local refresh = stateful(T, box, box, "FrameBg", "FrameBgHovered", "FrameBgActive")
+	box.Focused:Connect(function() paint(box, T.FrameBgActive) end)
+	box.FocusLost:Connect(function(enter)
+		refresh()
+		emit(win, a, box.Text)
+	end)
+	if a.Live then
+		box:GetPropertyChangedSignal("Text"):Connect(function() emit(win, a, box.Text) end)
+	end
+	initFlag(win, a, box.Text)
+	local lbl = sideLabel(row, a.Name, T)
+	local el = base(row)
+	function el:Set(t) box.Text = tostring(t) emit(win, a, box.Text) end
+	function el:Get() return box.Text end
+	function el:SetText(t) lbl.Text = t end
+	return el
+end
+Container.CreateTextbox = Container.CreateInput
+
+------------------------------------------------------------------ Combo / Dropdown
+function Container:CreateCombo(...)
+	local a = resolve({ "Name", "Options", "Default", "Callback" }, ...)
+	local win, T = self.Window, self.Window.Theme
+	local options = a.Options or {}
+	local selected = a.Default
+	if selected == nil then selected = options[1] end
+	initFlag(win, a, selected)
+
+	local row = self:_row(20)
+	local bar = New("TextButton", {
+		Parent = row, Size = UDim2.new(WIDTH, 0, 1, 0), Text = tostring(selected or ""),
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+	})
+	New("UIPadding", { Parent = bar, PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 24) })
+	paint(bar, T.Text, "Text")
+	stateful(T, bar, bar, "FrameBg", "FrameBgHovered", "FrameBgActive")
+	local arrowBox = New("Frame", { Parent = bar, Size = UDim2.new(0, 20, 1, 0), Position = UDim2.new(1, 24 - 20 + 0, 0, 0) })
+	arrowBox.Position = UDim2.new(1, 4, 0, 0) -- sits inside right padding region
+	paint(arrowBox, T.Button)
+	local arrow = New("TextLabel", { Parent = arrowBox, Size = UDim2.fromScale(1, 1), Text = "v" })
+	paint(arrow, T.Text, "Text")
+	local lbl = sideLabel(row, a.Name, T)
+
+	local function setSelected(v, silent)
+		selected = v
+		bar.Text = tostring(v or "")
+		if silent then initFlag(win, a, v) else emit(win, a, v) end
+	end
+
+	local function open()
+		local count = #options
+		local visible = math.min(count, 8)
+		local h = visible * 18 + 4
+		local x, y = bar.AbsolutePosition.X, bar.AbsolutePosition.Y + bar.AbsoluteSize.Y + 2
+		local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+		if y + h > vp.Y then y = bar.AbsolutePosition.Y - h - 2 end
+		local pop = New("Frame", {
+			Parent = win.Gui, Position = UDim2.fromOffset(x, y),
+			Size = UDim2.fromOffset(bar.AbsoluteSize.X, h), ZIndex = 50,
+		})
+		paint(pop, T.PopupBg)
+		stroke(pop, T.Border)
+		local list = New("ScrollingFrame", {
+			Parent = pop, Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, ZIndex = 51,
+			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			ScrollBarThickness = 4, ScrollBarImageColor3 = T.ScrollbarGrab.Color,
+		})
+		New("UIPadding", { Parent = list, PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2) })
+		New("UIListLayout", { Parent = list, SortOrder = Enum.SortOrder.LayoutOrder })
+		for idx, opt in ipairs(options) do
+			local item = New("TextButton", {
+				Parent = list, Size = UDim2.new(1, 0, 0, 18), LayoutOrder = idx, ZIndex = 52,
+				Text = tostring(opt), TextXAlignment = Enum.TextXAlignment.Left,
+			})
+			New("UIPadding", { Parent = item, PaddingLeft = UDim.new(0, 6) })
+			paint(item, T.Text, "Text")
+			local isSel = (opt == selected)
+			local hov = false
+			local function r()
+				if hov then paint(item, T.HeaderHovered)
+				elseif isSel then paint(item, T.Header)
+				else item.BackgroundTransparency = 1 end
+			end
+			item.MouseEnter:Connect(function() hov = true r() end)
+			item.MouseLeave:Connect(function() hov = false r() end)
+			item.Activated:Connect(function()
+				setSelected(opt)
+				win:_closePopup()
+			end)
+			r()
+		end
+		win:_openPopup(bar, pop, function() arrow.Text = "v" end)
+		arrow.Text = "^"
+	end
+
+	bar.Activated:Connect(function()
+		if win._popup and win._popup.Anchor == bar then win:_closePopup() else open() end
+	end)
+
+	local el = base(row)
+	function el:Set(v) setSelected(v) end
+	function el:Get() return selected end
+	function el:SetOptions(list, keep)
+		options = list or {}
+		if not keep or table.find(options, selected) == nil then setSelected(options[1], true) end
+	end
+	function el:SetText(t) lbl.Text = t end
+	return el
+end
+Container.CreateDropdown = Container.CreateCombo
+
+------------------------------------------------------------------ Keybind
+function Container:CreateKeybind(...)
+	local a = resolve({ "Name", "Default", "Callback" }, ...)
+	local win, T = self.Window, self.Window.Theme
+	local key = a.Default
+	if type(key) == "string" then key = Enum.KeyCode[key] end
+	local listening = false
+	initFlag(win, a, key)
+
+	local row = self:_row(20)
+	local btn = New("TextButton", { Parent = row, Size = UDim2.new(WIDTH, 0, 1, 0), Text = "" })
+	paint(btn, T.Text, "Text")
+	stateful(T, btn, btn, "Button", "ButtonHovered", "ButtonActive")
+	local lbl = sideLabel(row, a.Name, T)
+
+	local function update()
+		btn.Text = listening and "[ ... ]" or ("[" .. (key and key.Name or "None") .. "]")
+	end
+	update()
+
+	btn.Activated:Connect(function() listening = true update() end)
+	win:_connect(UIS.InputBegan, function(input, gp)
+		if listening then
+			if input.UserInputType == Enum.UserInputType.Keyboard then
+				listening = false
+				key = (input.KeyCode ~= Enum.KeyCode.Escape) and input.KeyCode or nil
+				update()
+				if a.Flag then win.Flags[a.Flag] = key end
+				safe(a.Changed, key)
+			end
+			return
+		end
+		if not gp and key and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == key then
+			safe(a.Callback, key)
+		end
+	end)
+
+	local el = base(row)
+	function el:Set(k)
+		if type(k) == "string" then k = Enum.KeyCode[k] end
+		key = k update()
+		if a.Flag then win.Flags[a.Flag] = key end
+		safe(a.Changed, key)
+	end
+	function el:Get() return key end
+	function el:SetText(t) lbl.Text = t end
+	return el
+end
+
+------------------------------------------------------------------ Color picker
+function Container:CreateColorPicker(...)
+	local a = resolve({ "Name", "Default", "Callback" }, ...)
+	local win, T = self.Window, self.Window.Theme
+	local h, s, v = (a.Default or Color3.new(1, 1, 1)):ToHSV()
+	local function current() return Color3.fromHSV(h, s, v) end
+	initFlag(win, a, current())
+
+	local row = self:_row(20)
+	local swatch = New("TextButton", {
+		Parent = row, Size = UDim2.new(WIDTH, 0, 1, 0), Text = "", BackgroundColor3 = current(),
+	})
+	stroke(swatch, T.Border)
+	local lbl = sideLabel(row, a.Name, T)
+
+	local ui -- live popup widgets
+	local function hex(c)
+		return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+	end
+	local function refresh()
+		swatch.BackgroundColor3 = current()
+		if ui and ui.pop.Parent then
+			ui.sv.BackgroundColor3 = Color3.fromHSV(h, 1, 1)
+			ui.svCur.Position = UDim2.fromScale(s, 1 - v)
+			ui.hueCur.Position = UDim2.new(0.5, 0, h, 0)
+			if not ui.hex:IsFocused() then ui.hex.Text = hex(current()) end
+		end
+	end
+	local function changed() refresh() emit(win, a, current()) end
+
+	local function open()
+		local x, y = swatch.AbsolutePosition.X, swatch.AbsolutePosition.Y + swatch.AbsoluteSize.Y + 2
+		local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+		if y + 146 > vp.Y then y = swatch.AbsolutePosition.Y - 146 - 2 end
+		if x + 176 > vp.X then x = vp.X - 176 - 4 end
+
+		local pop = New("Frame", { Parent = win.Gui, Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(176, 146), ZIndex = 50 })
+		paint(pop, T.PopupBg) stroke(pop, T.Border)
+
+		local sv = New("TextButton", {
+			Parent = pop, Position = UDim2.fromOffset(6, 6), Size = UDim2.fromOffset(140, 110), Text = "",
+			BackgroundColor3 = Color3.fromHSV(h, 1, 1), ZIndex = 51, ClipsDescendants = true,
+		})
+		local white = New("Frame", { Parent = sv, Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), ZIndex = 52 })
+		New("UIGradient", { Parent = white, Transparency = NumberSequence.new(0, 1) })
+		local black = New("Frame", { Parent = sv, Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), ZIndex = 53 })
+		New("UIGradient", { Parent = black, Rotation = 90, Transparency = NumberSequence.new(1, 0) })
+		local svCur = New("Frame", {
+			Parent = sv, Size = UDim2.fromOffset(8, 8), AnchorPoint = Vector2.new(0.5, 0.5),
+			BackgroundTransparency = 1, ZIndex = 55,
+		})
+		New("UICorner", { Parent = svCur, CornerRadius = UDim.new(1, 0) })
+		New("UIStroke", { Parent = svCur, Thickness = 1.5, Color = Color3.new(1, 1, 1) })
+
+		local hue = New("TextButton", {
+			Parent = pop, Position = UDim2.fromOffset(152, 6), Size = UDim2.fromOffset(18, 110), Text = "",
+			BackgroundColor3 = Color3.new(1, 1, 1), ZIndex = 51,
+		})
+		local kp = {}
+		for i = 0, 6 do table.insert(kp, ColorSequenceKeypoint.new(i / 6, Color3.fromHSV(i / 6 == 1 and 0 or i / 6, 1, 1))) end
+		New("UIGradient", { Parent = hue, Rotation = 90, Color = ColorSequence.new(kp) })
+		local hueCur = New("Frame", {
+			Parent = hue, Size = UDim2.new(1, 4, 0, 3), AnchorPoint = Vector2.new(0.5, 0.5),
+			BackgroundColor3 = Color3.new(1, 1, 1), ZIndex = 55,
+		})
+		New("UIStroke", { Parent = hueCur, Thickness = 1, Color = Color3.new(0, 0, 0) })
+
+		local hexBox = New("TextBox", {
+			Parent = pop, Position = UDim2.fromOffset(6, 122), Size = UDim2.fromOffset(164, 18),
+			Text = hex(current()), ClearTextOnFocus = false, ZIndex = 51,
+		})
+		paint(hexBox, T.FrameBg) paint(hexBox, T.Text, "Text")
+		hexBox.FocusLost:Connect(function()
+			local r, g, b = hexBox.Text:match("^#?(%x%x)(%x%x)(%x%x)$")
+			if r then
+				h, s, v = Color3.fromRGB(tonumber(r, 16), tonumber(g, 16), tonumber(b, 16)):ToHSV()
+				changed()
+			else
+				hexBox.Text = hex(current())
+			end
+		end)
+
+		ui = { pop = pop, sv = sv, svCur = svCur, hueCur = hueCur, hex = hexBox }
+
+		local dragSV, dragHue = false, false
+		local function upSV(i)
+			local p = pointer(i)
+			s = math.clamp((p.X - sv.AbsolutePosition.X) / sv.AbsoluteSize.X, 0, 1)
+			v = 1 - math.clamp((p.Y - sv.AbsolutePosition.Y) / sv.AbsoluteSize.Y, 0, 1)
+			changed()
+		end
+		local function upHue(i)
+			local p = pointer(i)
+			h = math.clamp((p.Y - hue.AbsolutePosition.Y) / hue.AbsoluteSize.Y, 0, 0.999)
+			changed()
+		end
+		sv.InputBegan:Connect(function(i) if isPress(i) then dragSV = true upSV(i) end end)
+		hue.InputBegan:Connect(function(i) if isPress(i) then dragHue = true upHue(i) end end)
+		local c1 = UIS.InputChanged:Connect(function(i)
+			if isMove(i) then
+				if dragSV then upSV(i) elseif dragHue then upHue(i) end
+			end
+		end)
+		local c2 = UIS.InputEnded:Connect(function(i)
+			if isPress(i) then dragSV, dragHue = false, false end
+		end)
+		win:_openPopup(swatch, pop, function()
+			c1:Disconnect() c2:Disconnect() ui = nil
+		end)
+		refresh()
+	end
+
+	swatch.Activated:Connect(function()
+		if win._popup and win._popup.Anchor == swatch then win:_closePopup() else open() end
+	end)
+
+	local el = base(row)
+	function el:Set(c) h, s, v = c:ToHSV() changed() end
+	function el:Get() return current() end
+	function el:SetText(t) lbl.Text = t end
+	return el
+end
+
+------------------------------------------------------------------ Collapsing header
+function Container:CreateHeader(...)
+	local a = resolve({ "Name", "DefaultOpen" }, ...)
+	local win, T = self.Window, self.Window.Theme
+	local open = a.DefaultOpen == true
+
+	local wrap = New("Frame", {
+		Parent = self.Content, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1, LayoutOrder = self:_next(),
+	})
+	New("UIListLayout", { Parent = wrap, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder })
+	local head = New("TextButton", { Parent = wrap, Size = UDim2.new(1, 0, 0, 20), Text = "", LayoutOrder = 1 })
+	stateful(T, head, head, "Header", "HeaderHovered", "HeaderActive")
+	local arrow = New("TextLabel", { Parent = head, Position = UDim2.fromOffset(6, 0), Size = UDim2.fromOffset(12, 20), Text = open and "v" or ">" })
+	local title = New("TextLabel", {
+		Parent = head, Position = UDim2.fromOffset(22, 0), Size = UDim2.new(1, -22, 1, 0),
+		Text = a.Name or "", TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	paint(arrow, T.Text, "Text") paint(title, T.Text, "Text")
+
+	local content = New("Frame", {
+		Parent = wrap, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1, LayoutOrder = 2, Visible = open,
+	})
+	New("UIListLayout", { Parent = content, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder })
+	New("UIPadding", { Parent = content, PaddingLeft = UDim.new(0, 8) })
+
+	local group = setmetatable({ Window = win, Content = content, _order = 0 }, Container)
+	function group:SetOpen(o)
+		open = o and true or false
+		content.Visible = open
+		arrow.Text = open and "v" or ">"
+		win:_closePopup()
+	end
+	function group:IsOpen() return open end
+	function group:SetVisible(v) wrap.Visible = v end
+	function group:Destroy() wrap:Destroy() end
+	function group:SetText(t) title.Text = t end
+	head.Activated:Connect(function() group:SetOpen(not open) end)
+	return group
+end
+Container.CreateCollapsingHeader = Container.CreateHeader
+Container.CreateSection = Container.CreateHeader
+
+--==============================================================================
+-- TAB
+--==============================================================================
+local Tab = setmetatable({}, { __index = Container })
+Tab.__index = Tab
+function Tab:Select() self.Window:SelectTab(self) end
+
+--==============================================================================
+-- WINDOW
+--==============================================================================
+local Window = {}
+Window.__index = Window
+
+function Window:_connect(signal, fn)
+	local c = signal:Connect(fn)
+	table.insert(self.Connections, c)
+	return c
+end
+
+function Window:_openPopup(anchor, frame, onClose)
+	self:_closePopup()
+	self._popup = { Anchor = anchor, Frame = frame, OnClose = onClose }
+end
+
+function Window:_closePopup()
+	local p = self._popup
+	if p then
+		self._popup = nil
+		if p.OnClose then pcall(p.OnClose) end
+		p.Frame:Destroy()
+	end
+end
+
+function Window:SetTitle(t)
+	self.Title = t
+	self.TitleLabel.Text = t
+end
+
+function Window:SetToggleKey(k) self.ToggleKey = k end
+
+function Window:Toggle(v)
+	if v == nil then v = not self.Visible end
+	self.Visible = v
+	self.Main.Visible = v
+	if not v then self:_closePopup() end
+end
+
+function Window:Destroy()
+	if self.Destroyed then return end
+	self.Destroyed = true
+	self:_closePopup()
+	for _, c in ipairs(self.Connections) do pcall(function() c:Disconnect() end) end
+	self.Connections = {}
+	self.Gui:Destroy()
+	safe(self.OnClose)
+end
+
+function Window:SelectTab(target)
+	if type(target) == "string" then
+		for _, t in ipairs(self.Tabs) do if t.Name == target then target = t break end end
+	end
+	if type(target) ~= "table" then return end
+	self:_closePopup()
+	self.Active = target
+	for _, t in ipairs(self.Tabs) do
+		t.Page.Visible = (t == target)
+		t._refresh()
+	end
+end
+
+function Window:CreateTab(name)
+	local T = self.Theme
+	name = name or ("Tab " .. (#self.Tabs + 1))
+
+	local page = New("ScrollingFrame", {
+		Parent = self.Pages, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false,
+		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 5, ScrollBarImageColor3 = T.ScrollbarGrab.Color,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+	})
+	New("UIListLayout", { Parent = page, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder })
+	New("UIPadding", {
+		Parent = page, PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8),
+		PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 12),
+	})
+
+	local btn = New("TextButton", {
+		Parent = self.TabBar, Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X,
+		Text = name, LayoutOrder = #self.Tabs + 1,
+	})
+	New("UIPadding", { Parent = btn, PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9) })
+	New("UICorner", { Parent = btn, CornerRadius = UDim.new(0, 3) })
+	paint(btn, T.Text, "Text")
+
+	local tab = setmetatable({ Window = self, Name = name, Content = page, Page = page, Button = btn, _order = 0 }, Tab)
+	local hov = false
+	tab._refresh = function()
+		if self.Active == tab then paint(btn, T.TabActive)
+		elseif hov then paint(btn, T.TabHovered)
+		else paint(btn, T.Tab) end
+	end
+	btn.MouseEnter:Connect(function() hov = true tab._refresh() end)
+	btn.MouseLeave:Connect(function() hov = false tab._refresh() end)
+	btn.Activated:Connect(function() self:SelectTab(tab) end)
+
+	table.insert(self.Tabs, tab)
+	if not self.Active then self:SelectTab(tab) else tab._refresh() end
+	return tab
+end
+
+function Window:Notify(a, text, duration)
+	if type(a) ~= "table" then a = { Title = a, Text = text, Duration = duration } end
+	local T = self.Theme
+	local dur = a.Duration or 4
+	self._notifyId = (self._notifyId or 0) + 1
+
+	local n = New("Frame", {
+		Parent = self.NotifyHolder, Size = UDim2.fromOffset(250, 0), AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = self._notifyId,
+	})
+	paint(n, T.WindowBg) stroke(n, T.Border)
+	New("UIListLayout", { Parent = n, SortOrder = Enum.SortOrder.LayoutOrder })
+	local tb = New("Frame", { Parent = n, Size = UDim2.new(1, 0, 0, 18), LayoutOrder = 1 })
+	paint(tb, T.TitleBgActive)
+	local tl = New("TextLabel", {
+		Parent = tb, Position = UDim2.fromOffset(6, 0), Size = UDim2.new(1, -12, 1, 0),
+		Text = a.Title or "Notification", TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	paint(tl, T.Text, "Text")
+	local body = New("TextLabel", {
+		Parent = n, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 2,
+		Text = a.Text or "", TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+	})
+	New("UIPadding", {
+		Parent = body, PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+		PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6),
+	})
+	paint(body, T.Text, "Text")
+	local bar = New("Frame", { Parent = n, Size = UDim2.new(1, 0, 0, 2), LayoutOrder = 3 })
+	paint(bar, T.CheckMark)
+	TweenService:Create(bar, TweenInfo.new(dur, Enum.EasingStyle.Linear), { Size = UDim2.new(0, 0, 0, 2) }):Play()
+
+	task.delay(dur, function()
+		if not n.Parent then return end
+		local info = TweenInfo.new(0.3)
+		for _, d in ipairs(n:GetDescendants()) do
+			if d:IsA("GuiObject") then
+				TweenService:Create(d, info, { BackgroundTransparency = 1 }):Play()
+				if d:IsA("TextLabel") then TweenService:Create(d, info, { TextTransparency = 1 }):Play() end
+			elseif d:IsA("UIStroke") then
+				TweenService:Create(d, info, { Transparency = 1 }):Play()
+			end
+		end
+		TweenService:Create(n, info, { BackgroundTransparency = 1 }):Play()
+		task.delay(0.35, function() n:Destroy() end)
+	end)
+end
+
+--==============================================================================
+-- WINDOW CONSTRUCTION
+--==============================================================================
+function Paragon:CreateWindow(opts)
+	opts = opts or {}
+	local T = table.clone(DefaultTheme)
+	for k, v in pairs(opts.Theme or {}) do
+		if typeof(v) == "Color3" then T[k] = { Color = v, Alpha = T[k] and T[k].Alpha or 1 } else T[k] = v end
+	end
+	local title = opts.Title or "PARAGON UI SYSTEM"
+
+	local win = setmetatable({
+		Theme = T, Flags = {}, Tabs = {}, Connections = {}, Title = title,
+		Visible = true, Destroyed = false, OnClose = opts.OnClose,
+		ToggleKey = (opts.ToggleKey == nil) and Enum.KeyCode.RightShift or (opts.ToggleKey or nil),
+	}, Window)
+
+	local gui = New("ScreenGui", {
+		Name = "PARAGON_" .. title, ResetOnSpawn = false, IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 1000,
+	})
+	mount(gui)
+	win.Gui = gui
+
+	local size = toVec2(opts.Size, Vector2.new(480, 350))
+	local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+	local pos = toVec2(opts.Position, Vector2.new(math.floor((vp.X - size.X) / 2), math.floor((vp.Y - size.Y) / 2)))
+	win.Size = size
+
+	local main = New("Frame", { Name = "Window", Parent = gui, Position = UDim2.fromOffset(pos.X, pos.Y), Size = UDim2.fromOffset(size.X, size.Y) })
+	paint(main, T.WindowBg) stroke(main, T.Border)
+	win.Main = main
+
+	-- Title bar
+	local tbar = New("Frame", { Parent = main, Size = UDim2.new(1, 0, 0, TITLE_H), Active = true, ZIndex = 5 })
+	paint(tbar, T.TitleBgActive)
+	local arrow = New("TextButton", { Parent = tbar, Size = UDim2.fromOffset(TITLE_H, TITLE_H), Text = "v", BackgroundTransparency = 1, ZIndex = 6 })
+	local tlabel = New("TextLabel", {
+		Parent = tbar, Position = UDim2.fromOffset(TITLE_H + 2, 0), Size = UDim2.new(1, -(TITLE_H * 2 + 4), 1, 0),
+		Text = title, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 6,
+	})
+	local close = New("TextButton", {
+		Parent = tbar, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0),
+		Size = UDim2.fromOffset(TITLE_H, TITLE_H), Text = "x", ZIndex = 6,
+	})
+	paint(arrow, T.Text, "Text") paint(tlabel, T.Text, "Text") paint(close, T.Text, "Text")
+	close.BackgroundTransparency = 1
+	close.MouseEnter:Connect(function() paint(close, T.ButtonHovered) end)
+	close.MouseLeave:Connect(function() close.BackgroundTransparency = 1 end)
+	win.TitleLabel = tlabel
+
+	-- Body
+	local body = New("Frame", {
+		Parent = main, Position = UDim2.fromOffset(0, TITLE_H), Size = UDim2.new(1, 0, 1, -TITLE_H),
+		BackgroundTransparency = 1, ClipsDescendants = true,
+	})
+	local tabBar = New("ScrollingFrame", {
+		Parent = body, Position = UDim2.fromOffset(6, 4), Size = UDim2.new(1, -12, 0, 22),
+		BackgroundTransparency = 1, ScrollBarThickness = 0, CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.X, ScrollingDirection = Enum.ScrollingDirection.X,
+	})
+	New("UIListLayout", { Parent = tabBar, FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder })
+	local tabLine = New("Frame", { Parent = body, Position = UDim2.fromOffset(6, 26), Size = UDim2.new(1, -12, 0, 1) })
+	paint(tabLine, T.TabActive)
+	local pages = New("Frame", {
+		Parent = body, Position = UDim2.fromOffset(0, 28), Size = UDim2.new(1, 0, 1, -28),
+		BackgroundTransparency = 1, ClipsDescendants = true,
+	})
+	win.TabBar, win.Pages = tabBar, pages
+
+	-- Resize grip
+	local grip = New("TextButton", {
+		Parent = main, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, 0, 1, 0),
+		Size = UDim2.fromOffset(14, 14), Text = "", BackgroundTransparency = 1, ZIndex = 10,
+	})
+	for _, p in ipairs({ { 10, 10 }, { 6, 10 }, { 10, 6 } }) do
+		local d = New("Frame", { Parent = grip, Position = UDim2.fromOffset(p[1], p[2]), Size = UDim2.fromOffset(2, 2), ZIndex = 11 })
+		paint(d, T.Separator)
+		d.BackgroundTransparency = 0.2
+	end
+
+	-- Notification holder
+	win.NotifyHolder = New("Frame", {
+		Parent = gui, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -12, 1, -12),
+		Size = UDim2.new(0, 250, 1, -24), BackgroundTransparency = 1, ZIndex = 100,
+	})
+	New("UIListLayout", {
+		Parent = win.NotifyHolder, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+		VerticalAlignment = Enum.VerticalAlignment.Bottom, HorizontalAlignment = Enum.HorizontalAlignment.Right,
+	})
+
+	-- Collapse
+	local collapsed = false
+	local function setCollapsed(c)
+		collapsed = c
+		body.Visible, grip.Visible = not c, not c
+		arrow.Text = c and ">" or "v"
+		main.Size = UDim2.fromOffset(win.Size.X, c and TITLE_H or win.Size.Y)
+		win:_closePopup()
+	end
+	arrow.Activated:Connect(function() setCollapsed(not collapsed) end)
+	close.Activated:Connect(function() win:Destroy() end)
+
+	-- Drag + resize
+	local dragging, resizing = false, false
+	local dragStart, startPos, startSize
+	tbar.InputBegan:Connect(function(i)
+		if isPress(i) then
+			dragging = true
+			dragStart = i.Position
+			startPos = Vector2.new(main.Position.X.Offset, main.Position.Y.Offset)
+		end
+	end)
+	grip.InputBegan:Connect(function(i)
+		if isPress(i) then
+			resizing = true
+			dragStart = i.Position
+			startSize = win.Size
+		end
+	end)
+	win:_connect(UIS.InputChanged, function(i)
+		if not isMove(i) then return end
+		local cam = workspace.CurrentCamera
+		local v = cam and cam.ViewportSize or Vector2.new(1280, 720)
+		if dragging then
+			local d = i.Position - dragStart
+			local x = math.clamp(startPos.X + d.X, -win.Size.X + 60, v.X - 60)
+			local y = math.clamp(startPos.Y + d.Y, 0, v.Y - TITLE_H)
+			main.Position = UDim2.fromOffset(x, y)
+			win:_closePopup()
+		elseif resizing then
+			local d = i.Position - dragStart
+			win.Size = Vector2.new(math.max(startSize.X + d.X, 300), math.max(startSize.Y + d.Y, 180))
+			main.Size = UDim2.fromOffset(win.Size.X, win.Size.Y)
+		end
+	end)
+	win:_connect(UIS.InputEnded, function(i)
+		if isPress(i) then dragging, resizing = false, false end
+	end)
+
+	-- Global input: focus colouring, popup dismissal, toggle key
+	win:_connect(UIS.InputBegan, function(input, gp)
+		if isPress(input) then
+			local p = pointer(input)
+			paint(tbar, inside(main, p) and T.TitleBgActive or T.TitleBg)
+			local pop = win._popup
+			if pop and not inside(pop.Frame, p) and not inside(pop.Anchor, p) then
+				win:_closePopup()
+			end
+		elseif not gp and win.ToggleKey and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == win.ToggleKey then
+			win:Toggle()
+		end
+	end)
+
+	Paragon.Windows = Paragon.Windows or {}
+	table.insert(Paragon.Windows, win)
+	return win
+end
+
+--==============================================================================
+-- DEFAULT WINDOW FORWARDING  (so `lib:CreateTab()` works straight off the loadstring)
+--==============================================================================
+local default
+
+local function getDefault()
+	if not default or default.Destroyed then
+		default = Paragon:CreateWindow(Paragon.Config or {})
+		Paragon.Flags = default.Flags
+	end
+	return default
+end
+
+-- Optional: configure & create the default window up-front. Returns the window.
+function Paragon:Init(opts)
+	if default and not default.Destroyed then default:Destroy() end
+	Paragon.Config = opts or {}
+	default = nil
+	return getDefault()
+end
+
+for _, name in ipairs({ "CreateTab", "Notify", "SetTitle", "Toggle", "Destroy", "SelectTab", "SetToggleKey" }) do
+	Paragon[name] = function(_, ...)
+		local w = getDefault()
+		return w[name](w, ...)
+	end
+end
+
+return Paragon
